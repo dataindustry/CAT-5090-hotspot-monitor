@@ -1,19 +1,35 @@
-# RTX 5090 Blackwell 六路 BJT 温度只读探针
+# CAT-5090-hotspot-monitor
 
-这是一个独立于 CAT 的 Windows 实验项目。它使用自建、测试签名的最小 WDM 内核驱动，只读访问本机 RTX 5090 BAR0 中六个 Blackwell BJT 温度寄存器；Python 负责持续轮询、解码六路温度并计算其中最大值作为 Hot Spot。
+这是一个面向 RTX 5090 Founders Edition 的 Windows 实验性只读探针。它使用自建、测试签名的最小 WDM 内核驱动读取 BAR0 THERM 窗口中的六个固定寄存器，再由 Python 持续轮询、解码六路温度，并将六路有效值的最大值报告为实验性 `hotSpotC`。
 
-该方案已经在当前机器上端到端跑通。它不依赖 CPU-Z、HWMonitor、WinRing0、RyzenAdj、LibreHardwareMonitor 或 Afterburner。
+项目不依赖 CPU-Z、HWMonitor、WinRing0、RyzenAdj、LibreHardwareMonitor 或 Afterburner，已经在一张 RTX 5090 Founders Edition 上端到端跑通。
+
+## 已验证结论与证据边界
+
+- 六个寄存器位于 GB202 的 `NV_THERM` 地址窗口。
+- bit 30 有效时，按 `(raw & 0xFFFF) / 256` 可以得到稳定、合理并随负载变化的摄氏温度。
+- 当前显卡上六路均有效，`validMask` 为 `0x3F`。
+- 六路有效值的最大值与 HWMonitor 1.65.1 的 Hot Spot 实时读数一致。
+- 与 HWMonitor 一致属于辅助验证，只能证明地址和解码流程可复现，不能证明寄存器的完整物理语义。
+- NVIDIA 没有正式确认这六路分别对应六个独立物理 BJT，也没有公开每一路的位置、校准方式或聚合方式。
+
+因此，本项目统一称它们为“六路内部温度通道”。源文件和设备名称中的 `bjt` 是实验早期命名，不代表 NVIDIA 官方定义。
+
+背景、证据链和限制说明：
+
+- [Blackwell 六路内部温度：从寄存器发现到独立验证](docs/RTX-5090-温度读取说明.md)
+- [Discuz 可直接粘贴版本](docs/RTX-5090-温度读取说明-Discuz.txt)
 
 ## 适用范围
 
 - 操作系统：Windows 11 x64。
-- 显卡：当前机器的 `PCI\VEN_10DE&DEV_2B85`，NVIDIA GeForce RTX 5090。
+- 显卡：已验证机器的 `PCI\VEN_10DE&DEV_2B85`，NVIDIA GeForce RTX 5090 Founders Edition。
 - 当前 BAR0 物理基址：`0xD8000000`。
 - 目标寄存器：`BAR0 + 0xAD0A90` 至 `BAR0 + 0xAD0AA4`，共六个，步长 4 字节。
 - 温度换算：bit 30 有效时，`(raw & 0xFFFF) / 256` °C。
-- Hot Spot：本次采样中六路有效温度的最大值。
+- `hotSpotC`：本次采样中六路有效温度的最大值，仅作为实验性 Hot Spot 输出。
 
-这不是通用可分发驱动。安装脚本会在加载前重新读取 RTX 5090 的 PnP 资源；只要 BAR0 不等于 `0xD8000000` 就直接拒绝加载，绝不猜测地址。
+这不是适用于所有 RTX 50 显卡的通用驱动。安装脚本会在加载前重新读取 RTX 5090 的 PnP 资源；只要 BAR0 不等于 `0xD8000000` 就直接拒绝加载，绝不猜测地址。其他显卡、其他 BAR0 分配或未来驱动版本必须重新验证，不能通过删除检查强行运行。
 
 ## 安全边界
 
@@ -83,11 +99,11 @@ bcdedit /set testsigning on
 
 | 文件 | 职责 |
 |---|---|
-| `driver.c` | 最小 WDM 驱动、设备 ACL、固定六路 MMIO 读取。 |
-| `cat_bjt_readonly.h` | 唯一 IOCTL 和固定响应合同。 |
+| `driver.c` | 最小 WDM 驱动、设备 ACL、固定六路内部温度 MMIO 读取。 |
+| `cat_bjt_readonly.h` | 唯一 IOCTL 和固定响应合同；`bjt` 为早期实验命名。 |
 | `build.ps1` | 定位 MSVC/WDK，编译和链接 x64 `.sys`。 |
 | `install-test-driver.ps1` | 校验管理员权限、TESTSIGNING、GPU 和 BAR0，创建测试证书、签名、安装并启动驱动。 |
-| `read_bjt_temperatures.py` | 轮询驱动、输出六路温度和 Hot Spot。 |
+| `read_bjt_temperatures.py` | 轮询驱动、输出六路内部温度和实验性 Hot Spot。 |
 | `start-monitor.ps1` | 启动按需驱动并持续轮询，按 Ctrl+C 停止。 |
 | `remove-test-driver.ps1` | 停止服务并删除已安装驱动。 |
 | `实验结果.md` | 当前机器的端到端验证结论。 |
@@ -138,7 +154,7 @@ sc.exe query CatBjtReadOnly
 sc.exe qc CatBjtReadOnly
 ```
 
-## 轮询六路温度
+## 轮询六路内部温度
 
 设备 ACL 要求管理员令牌，因此必须在管理员 PowerShell 中运行 Python。
 
@@ -174,8 +190,8 @@ python .\read_bjt_temperatures.py --interval 1 --count 0 --output .\bjt-samples.
 
 - `validMask=0x3F` 表示六路全部有效。
 - `raw` 是驱动原样返回的六个 32 位寄存器值。
-- `temperaturesC` 是六路解码温度。
-- `hotSpotC` 是本次读取六路有效温度的最大值。
+- `temperaturesC` 是六路解码后的内部温度。
+- `hotSpotC` 是本次读取六路有效温度的最大值，属于实验性结果。
 
 ## 停止和卸载
 
