@@ -1,0 +1,9 @@
+build/
+obj/
+__pycache__/
+*.py[cod]
+*.ndjson
+*.log
+*.pdb
+*.cer
+*.sys
